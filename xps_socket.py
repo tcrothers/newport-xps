@@ -29,12 +29,15 @@ class AbstractSocket(ABC):
     def socket_coroutine(self, a_socket):
         pass
 
-    def send_recv(self, cmd, check=False):
+    # handles error, returns either a single string or tuple of strings
+    def send_recv(self, cmd):
         err, msg = self._socket.send(cmd)
-
-        if err != 0 and check:
+        # todo this is a good place to place an error-check- needs implementing
+        if err != 0:
             raise MyException(msg)
-        return err, msg
+        if len(msg) == 1:
+            return msg[0]
+        return msg
 
 
 class XpsSocket(AbstractSocket):
@@ -68,18 +71,11 @@ class XpsSocket(AbstractSocket):
 
                     if "," in msg:
                         msg = msg.split(",")
-                        msg = [int(msg[0]), msg[1]]
+                        msg = [int(msg[0]), msg[1:-1]]
         except socket.timeout:
             yield [-2, '']
         except socket.error as err:  # (errNb, errString):
             print('Socket error : ', err.errno, err)
             yield [-2, '']
 
-    # login :  Log in
-    def login(self, name, password):
-        return self.send_recv(f"Login({name},{password})")
-
-    # firmware_version_get :  Return firmware version
-    def firmware_version_get(self):
-        return self.send_recv(f"FirmwareVersionGet(char *)")
 

@@ -94,14 +94,14 @@ class SFTPWrapper(FTPBaseWrapper):
 
     def getlines(self, remotefile):
         "read text of remote file"
-        tmp = utils.bytesio()
+        tmp = bytesio()
         self._conn.getfo(remotefile, tmp)
         tmp.seek(0)
-        text = utils.bytes2str(tmp.read())
+        text = bytes2str(tmp.read())
         return text.split('\n')
 
     def put(self, text, remotefile):
-        txtfile = utils.bytesio(six.b(text))
+        txtfile = bytesio(six.b(text))
         self._conn.putfo(txtfile, remotefile)
 
 
@@ -130,18 +130,18 @@ class FTPWrapper(FTPBaseWrapper):
         x = self._conn.retrbinary('RETR %s' % remotefile, output.append)
         open_opts = {}
         if six.PY3:
-            open_opts['encoding'] = utils.FTP_ENCODING
+            open_opts['encoding'] = FTP_ENCODING
         with open(localfile, 'w', **open_opts) as fout:
-            fout.write(''.join([utils.bytes2str(s) for s in output]))
+            fout.write(''.join([bytes2str(s) for s in output]))
 
     def getlines(self, remotefile):
         "read text of remote file"
         output = []
         self._conn.retrbinary('RETR %s' % remotefile, output.append)
-        text = ''.join([utils.bytes2str(line) for line in output])
+        text = ''.join([bytes2str(line) for line in output])
         return text.split('\n')
 
     def put(self, text, remotefile):
-        txtfile = utils.bytesio(six.b(text))
+        txtfile = bytesio(six.b(text))
         # print(" Put ", text, txtfile)
         self._conn.storbinary('STOR %s' % remotefile, txtfile)
