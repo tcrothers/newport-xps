@@ -42,6 +42,13 @@ class FTPBaseWrapper(object):
         self.password = password
         self._conn = None
 
+    def get_ini_info(self, ftphome):
+        self.connect()
+        self.cwd(os.path.join(ftphome, 'Config'))
+        lines = self.getlines('system.ini')
+        self.close()
+        return lines
+
     def close(self):
         if self._conn is not None:
             self._conn.close()
@@ -50,7 +57,7 @@ class FTPBaseWrapper(object):
     def cwd(self, remotedir):
         self._conn.cwd(remotedir)
 
-    def connect(self, host=None, username=None, password=None):
+    def connect(self):
         raise NotImplemented
 
     def save(self, remotefile, localfile):
@@ -73,13 +80,7 @@ class SFTPWrapper(FTPBaseWrapper):
         FTPBaseWrapper.__init__(self, host=host,
                                 username=username, password=password)
 
-    def connect(self, host=None, username=None, password=None):
-        if host is not None:
-            self.host = host
-        if username is not None:
-            self.username = username
-        if password is not None:
-            self.password = password
+    def connect(self):
 
         if not HAS_PYSFTP:
             raise ValueError("pysftp not installed.")
@@ -112,13 +113,7 @@ class FTPWrapper(FTPBaseWrapper):
         FTPBaseWrapper.__init__(self, host=host,
                                 username=username, password=password)
 
-    def connect(self, host=None, username=None, password=None):
-        if host is not None:
-            self.host = host
-        if username is not None:
-            self.username = username
-        if password is not None:
-            self.password = password
+    def connect(self):
 
         self._conn = ftplib.FTP()
         self._conn.connect(self.host)

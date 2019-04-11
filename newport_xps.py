@@ -20,8 +20,8 @@ class XPSException(Exception):
 
 
 class NewportXps:
-    groups = []
-    stages = []
+    groups = OrderedDict()
+    stages = OrderedDict()
     firmware_version = None
     model = None
 
@@ -44,7 +44,7 @@ class NewportXps:
         self._select_ftp_client()
 
         # todo : merge in the ftp functions
-        self._read_systemini(sock)
+        self._setup_stage_and_group_info(sock)
 
     def status_report(self, sock):
         """return printable status report"""
@@ -161,31 +161,24 @@ class NewportXps:
     def _ftp_args(self):
         return dict(host=self.host, username=self.username, password=self.password)
 
-    def _read_systemini(self, sock):
+    def _setup_stage_and_group_info(self, sock):
         """read group info from system.ini
         this is part of the connection process
         """
-        self.ftp.connect(**self._ftp_args())
-        self.ftp.cwd(os.path.join(self.ftphome, 'Config'))
-        lines = self.ftp.getlines('system.ini')
-        self.ftp.close()
+        # get the lines via ftp connection
+        lines = self.ftp.get_ini_info(self.ftphome)
 
-        pvtgroups = []
-        self.stages= OrderedDict()
-        self.groups = OrderedDict()
         sconf = ConfigParser()
         sconf.readfp(StringIO('\n'.join(lines)))
 
+        stage_counter = 0
+
         # read and populate lists of groups first
-        for gtype, glist in sconf.items('GROUPS'): # ].items():
-            if len(glist) > 0:
-                for gname in glist.split(','):
-                    gname = gname.strip()
-                    self.groups[gname] = OrderedDict()
-                    self.groups[gname]['category'] = gtype.strip()
-                    self.groups[gname]['positioners'] = []
-                    if gtype.lower().startswith('multiple'):
-                        pvtgroups.append(gname)
+        for group_type, groups_of_type in sconf.items('GROUPS'): # ].items():
+            if len(groups_of_type) > 0:
+                for group_name in groups_of_type.split(','):
+                    group_name = group_name.strip()
+                    self.groups[group_name] = XpsMotionGroup(group_name, group_type.strip())
 
         for section in sconf.sections():
             if section in ('DEFAULT', 'GENERAL', 'GROUPS'):
@@ -194,23 +187,10 @@ class NewportXps:
             if section in self.groups:  # this is a Group Section!
                 poslist = sconf.get(section, 'positionerinuse')
                 posnames = [a.strip() for a in poslist.split(',')]
-                self.groups[section]['positioners'] = posnames
+                self.groups[section].positioners = posnames
             elif 'plugnumber' in items: # this is a stage
-                self.stages[section] = {'stagetype': sconf.get(section, 'stagename')}
-
-        for sname in self.stages:
-            velocity, accel = self._get_positioner_max_vel_and_accel(sock, sname)
-            try:
-                self.stages[sname]['max_velo']  = velocity
-                self.stages[sname]['max_accel'] = accel
-            except:
-                print("could not set max velo/accel for %s" % sname)
-            lo, hi = self._get_positioner_travel_lims(sock, sname)
-            try:
-                self.stages[sname]['low_limit']  = lo
-                self.stages[sname]['high_limit'] = hi
-            except:
-                print("could not set limits for %s" % sname)
+                stage_counter += 1
+                self.stages[f"Stage{stage_counter}"] = XpsPositioner(name=section, stage_type=sconf.get(section, 'stagename'), sock=sock)
 
         return self.groups
 
@@ -221,26 +201,51 @@ class NewportXps:
     def _firmware_version_get(self, socket):
         return socket.send_recv(f"FirmwareVersionGet(char *)")
 
-    # PositionerMaximumVelocityAndAccelerationGet :  Return maximum velocity and acceleration of the positioner
-    def _get_positioner_max_vel_and_accel(self, sock, positioner_name):
+class XpsPositioner:
+    max_accel = None
 
-        max_velocity, max_accel = sock.send_recv(
-            f"PositionerMaximumVelocityAndAccelerationGet({positioner_name},double *,double *)")
+    max_velocity = None
+    curr_velocity = None
 
-        print(f"positioner:{positioner_name}")
-        print(f"pos max vel+acc =  {max_velocity}, {max_accel}")
-        return float(max_velocity), float(max_accel)
+    min_position = None
+    max_position = None
+    curr_position = None
 
-    # PositionerMaximumVelocityAndAccelerationGet :  Return maximum velocity and acceleration of the positioner
-    def _get_positioner_travel_lims(self, sock, positioner_name):
+    def __init__(self, name, stage_type, sock):
+        self.stage_type = stage_type
+        self.name = name
+
+        self._find_travel_lims(sock)
+        self._find_max_vel_and_accel(sock)
+
+    def _find_travel_lims(self, sock):
+        try:
+            (self.min_position, self.max_position) = self._get_travel_lims(sock)
+        except:
+            print(f"could not set travel lims for {self.name}")
+
+    # PositionerTravelLimitsGet :  Return maximum and minimum possible displacements of the positioner
+    def _get_travel_lims(self, sock):
         lo_lim, hi_lim = sock.send_recv(
-            f"PositionerUserTravelLimitsGet({positioner_name},double *,double *)")
-
+            f"PositionerUserTravelLimitsGet({self.name},double *,double *)")
         print(f"pos travel lims = {lo_lim}, {hi_lim}")
         return float(lo_lim), float(hi_lim)
 
+    def _find_max_vel_and_accel(self, sock):
+        try:
+            self.max_velocity, self.max_accel = self._get_positioner_max_vel_and_accel(sock)
+        except:
+            print("could not set max velo/accel for {self.name}")
 
-class XpsPositioner:
+    # PositionerMaximumVelocityAndAccelerationGet :  Return maximum velocity and acceleration of the positioner
+    def _get_positioner_max_vel_and_accel(self, sock):
+        max_velocity, max_accel = sock.send_recv(
+            f"PositionerMaximumVelocityAndAccelerationGet({self.name},double *,double *)")
+
+        print(f"positioner:{self.name}")
+        print(f"pos max vel+acc =  {max_velocity}, {max_accel}")
+        return float(max_velocity), float(max_accel)
+
 
     # PositionerHardwareStatusGet :  Read positioner hardware status
     def PositionerHardwareStatusGet(self, socketId, PositionerName):
@@ -254,3 +259,12 @@ class XpsPositioner:
             j += 1
         retList.append(eval(returnedString[i:i + j]))
         return retList
+
+
+
+class XpsMotionGroup():
+    positioners = None
+
+    def __init__(self, name, category):
+        self.name = name
+        self.category = category
