@@ -3,12 +3,9 @@ from . import ftp_wrappers
 from collections import OrderedDict
 import time
 from socket import getfqdn
-# ideally can get rid of this:
-from six.moves import StringIO
-from six.moves.configparser import  ConfigParser
 
 
-
+# todo exceptions are not handled
 class XPSException(Exception):
     """XPS Controller Exception"""
 
@@ -19,29 +16,56 @@ class XPSException(Exception):
         return str(self.msg)
 
 
-class NewportXps:
-    groups = OrderedDict()
-    stages = OrderedDict()
-    firmware_version = None
-    model = None
+class XpsFactory:
 
-    def __init__(self, sock, username='Administrator', password='Administrator'):
+    def build(self, sock):
+        model, firmware_version = self.determine_xps_model(sock)
+        if model == "C":
+            xps = NewportXpsC(sock, firmware_version)
+        elif model == "D":
+            xps = NewportXpsD(sock, firmware_version)
+        elif model == "Q":
+            xps = NewportXpsQ(sock, firmware_version)
+
+        return xps
+
+    def determine_xps_model(self, sock):
+
+        firmware_version = NewportXps.firmware_version_get(sock)
+
+        if 'XPS-C' in firmware_version:
+            model = "C"
+        elif 'XPS-D' in firmware_version:
+            # todo test on XPS-D
+            model = "D"
+            val = sock.send_recv('InstallerVersionGet(char *)')
+            firmware_version = val
+        elif 'XPS-Q' in firmware_version:
+            model = "Q"
+        else:
+            raise XPSException(f"Unrecognised Model from firmware string '{firmware_version}'")
+
+        return model, firmware_version
+
+
+class NewportXps:
+    groups = {}
+
+    def __init__(self, sock, firmware_version, username='Administrator', password='Administrator'):
 
         self.host = sock.host
         self.username = username
         self.password = password
+        self.firmware_version = firmware_version
 
         # todo : test when this is needed? not for 5001 access I think!
-        try:
-            self._login(sock, username, password)
-        except:
-            raise XPSException(f"Login failed for {username} at " +
-                               f"{sock.host}:{sock.port_number}")
+        # try:
+        #     self._login(sock, username, password)
+        # except:
+        #     raise XPSException(f"Login failed for {username} at " +
+        #                        f"{sock.host}:{sock.port_number}")
 
-
-        self._determine_xps_model(sock)
-
-        self._select_ftp_client()
+        self._setup_ftp_client()
 
         # todo : merge in the ftp functions
         self._setup_stage_and_group_info(sock)
@@ -49,65 +73,39 @@ class NewportXps:
     def status_report(self, sock):
         """return printable status report"""
 
-        out = self._print_status_header(sock)
+        out = self._create_status_header(sock)
 
         out.append("# Groups and Stages")
-        hstat = self.get_hardware_status()
-        perrs = self.get_positioner_errors()
-
-        for groupname, status in self.get_group_status().items():
-            this = self.groups[groupname]
-            out.append("%s (%s), Status: %s" %
-                       (groupname, this['category'], status))
-            for pos in this['positioners']:
-                stagename = '%s.%s' % (groupname, pos)
-                stage = self.stages[stagename]
-                out.append("   %s (%s)"  % (stagename, stage['stagetype']))
-                out.append("      Hardware Status: %s"  % (hstat[stagename]))
-                out.append("      Positioner Errors: %s"  % (perrs[stagename]))
-        return "\n".join(out)
-
-    def _print_status_header(self, sock):
-
-        boot_time = self._calculate_boot_time(sock)
-
-        out = ["# XPS host:         %s (%s)" % (self.host, getfqdn(self.host)),
-               "# Firmware:         %s" % self.firmware_version,
-               "# Current Time:     %s" % time.ctime(),
-               "# Last Reboot:      %s" % time.ctime(boot_time),
-               ]
+        hstat = self._get_hardware_status()
         return out
+
+        # perrs = self.get_positioner_errors()
+        #
+        # for groupname, status in self.get_group_status().items():
+        #     this = self.groups[groupname]
+        #     out.append("%s (%s), Status: %s" %
+        #                (groupname, this['category'], status))
+        #     for pos in this['positioners']:
+        #         stagename = '%s.%s' % (groupname, pos)
+        #         stage = self.stages[stagename]
+        #         out.append("   %s (%s)"  % (stagename, stage['stagetype']))
+        #         out.append("      Hardware Status: %s"  % (hstat[stagename]))
+        #         out.append("      Positioner Errors: %s"  % (perrs[stagename]))
+        # return "\n".join(out)
 
 #########################################################
 
-    def get_hardware_status(self, sock):
+    def _get_hardware_status(self, sock):
         """
         get dictionary of hardware status for each stage
         """
         out = OrderedDict()
-        for stage in self.stages:
-            if stage in ('', None): continue
-            err, stat = self._xps.PositionerHardwareStatusGet(self._sid, stage)
-            self.check_error(err, msg="Pos HardwareStatus '%s'" % (stage))
-
-            err, val = self._xps.PositionerHardwareStatusStringGet(self._sid, stat)
-            self.check_error(err, msg="Pos HardwareStatusString '%s'" % (stat))
-            out[stage] = val
+        for stage in self.stages.items():
+            stat = stage.hardware_status_get(sock)
+            print(f"hardware status = {stat}")
+            stat = stage.hardware_status_string_get(sock, stat)
+            print(f"hardware status string = {stat}")
         return out
-
-    # PositionerHardwareStatusGet :  Read positioner hardware status
-    def PositionerHardwareStatusGet(self, socketId, PositionerName):
-        command = 'PositionerHardwareStatusGet(' + PositionerName + ',int *)'
-        error, returnedString = self.Send(socketId, command)
-        if (error != 0):
-            return [error, returnedString]
-
-        i, j, retList = 0, 0, [error]
-        while ((i + j) < len(returnedString) and returnedString[i + j] != ','):
-            j += 1
-        retList.append(eval(returnedString[i:i + j]))
-        return retList
-
 
     def get_positioner_errors(self):
         """
@@ -127,36 +125,27 @@ class NewportXps:
             out[stage] = val
         return out
 
+#########################################################
+
     # ElapsedTimeGet :  Return elapsed time from controller power on
     def _calculate_boot_time(self, sock):
         uptime = sock.send_recv(f'ElapsedTimeGet(double *)')
         boot_time = time.time() - float(uptime)
         return boot_time
 
-    def _determine_xps_model(self, sock):
+    def _create_status_header(self, sock):
 
-        val = self._firmware_version_get(sock)
-        print(val, sep="\n")
-        self.firmware_version = val
+        boot_time = self._calculate_boot_time(sock)
 
-        if 'XPS-C' in self.firmware_version:
-            self.model = "C"
-        elif 'XPS-D' in self.firmware_version:
-            # todo test on XPS-D
-            self.model = "D"
-            val = sock.send_recv('InstallerVersionGet(char *)')
-            self.firmware_version = val
-        elif 'XPS-Q' in self.firmware_version:
-            self.model = "Q"
+        out = ["# XPS host:         %s (%s)" % (self.host, getfqdn(self.host)),
+               "# Firmware:         %s" % self.firmware_version,
+               "# Current Time:     %s" % time.ctime(),
+               "# Last Reboot:      %s" % time.ctime(boot_time),
+               ]
+        return out
 
-    def _select_ftp_client(self):
-        if self.model == "D":
-            self.ftp = ftp_wrappers.SFTPWrapper(**self._ftp_args())
-        else:
-            self.ftp = ftp_wrappers.FTPWrapper(**self._ftp_args())
-
-        if self.model == "C":
-            self.ftphome = '/Admin'
+    def _setup_ftp_client(self):
+        raise NotImplemented
 
     def _ftp_args(self):
         return dict(host=self.host, username=self.username, password=self.password)
@@ -166,57 +155,93 @@ class NewportXps:
         this is part of the connection process
         """
         # get the lines via ftp connection
-        lines = self.ftp.get_ini_info(self.ftphome)
+        config_dict = self.ftp.get_ini_info(self.ftphome)
 
-        sconf = ConfigParser()
-        sconf.readfp(StringIO('\n'.join(lines)))
+        # get group names from groups section
+        for group_type, groups_of_type in config_dict["GROUPS"].items():
+            if "SingleAxis" not in group_type:
+                raise Exception("bad group type: only single axis supported")
+            single_ax_groups = [g for g in groups_of_type.split(", ")]
 
-        stage_counter = 0
+        # set up groups and positioners
+        for group_name in single_ax_groups:
+            self.groups[group_name] = XpsMotionGroup(group_name)
 
-        # read and populate lists of groups first
-        for group_type, groups_of_type in sconf.items('GROUPS'): # ].items():
-            if len(groups_of_type) > 0:
-                for group_name in groups_of_type.split(','):
-                    group_name = group_name.strip()
-                    self.groups[group_name] = XpsMotionGroup(group_name, group_type.strip())
+            positioner_name = config_dict[group_name]["PositionerInUse"]
+            pos_hardware_name = f"{group_name}.{positioner_name}"
+            pos_dict = config_dict[pos_hardware_name]
 
-        for section in sconf.sections():
-            if section in ('DEFAULT', 'GENERAL', 'GROUPS'):
-                continue
-            items = sconf.options(section)
-            if section in self.groups:  # this is a Group Section!
-                poslist = sconf.get(section, 'positionerinuse')
-                posnames = [a.strip() for a in poslist.split(',')]
-                self.groups[section].positioners = posnames
-            elif 'plugnumber' in items: # this is a stage
-                stage_counter += 1
-                self.stages[f"Stage{stage_counter}"] = XpsPositioner(name=section, stage_type=sconf.get(section, 'stagename'), sock=sock)
+            stage_type = pos_dict["StageName"]
+            plug_number = pos_dict["PlugNumber"]
 
-        return self.groups
+            self.groups[group_name].add_positioner(pos_hardware_name, stage_type, plug_number, sock)
+
+        return
 
     def _login(self, socket, username, password):
         return socket.send_recv(f"Login({username},{password})")
 
     # returns string of firmware version
-    def _firmware_version_get(self, socket):
+    @staticmethod
+    def firmware_version_get(socket):
         return socket.send_recv(f"FirmwareVersionGet(char *)")
 
+class NewportXpsC(NewportXps):
+    model = "C"
+
+    def _setup_ftp_client(self):
+        self.ftp = ftp_wrappers.FTPWrapper(**self._ftp_args())
+        self.ftphome = '/Admin'
+
+class NewportXpsD(NewportXps):
+    model = "D"
+
+    def _setup_ftp_client(self):
+        self.ftp = ftp_wrappers.SFTPWrapper(**self._ftp_args())
+        self.ftphome = ''
+
+class NewportXpsQ(NewportXps):
+    model = "Q"
+
+    def _setup_ftp_client(self):
+        self.ftp = ftp_wrappers.FTPWrapper(**self._ftp_args())
+        self.ftphome = ''
+
+# callable by xps
+class XpsMotionGroup():
+    positioners = None
+
+    def __init__(self, name):
+        self.name = name
+
+    def add_positioner(self, name, stage_type, plug_number, sock):
+        self.positioners = XpsPositioner(name, stage_type, plug_number, sock)
+
+# hardware level: called by group
 class XpsPositioner:
     max_accel = None
-
     max_velocity = None
-    curr_velocity = None
 
     min_position = None
     max_position = None
-    curr_position = None
 
-    def __init__(self, name, stage_type, sock):
-        self.stage_type = stage_type
+    def __init__(self, name, stage_type, plug_number, sock):
         self.name = name
+        self.stage_type = stage_type
+        self.plug_number = plug_number
 
-        self._find_travel_lims(sock)
         self._find_max_vel_and_accel(sock)
+        self._find_travel_lims(sock)
+
+    # PositionerHardwareStatusGet :  Read positioner hardware status
+    def hardware_status_get(self, sock):
+        returnedString = sock.send_recv(f"PositionerHardwareStatusGet({self.name},int *)")
+        return returnedString
+
+    # PositionerHardwareStatusStringGet :  Return the positioner hardware status string corresponding to the positioner error code
+    def hardware_status_string_get(self, sock, hardware_status):
+        return sock.send_recv(f"PositionerHardwareStatusStringGet({hardware_status}, char *)")
+
 
     def _find_travel_lims(self, sock):
         try:
@@ -246,7 +271,6 @@ class XpsPositioner:
         print(f"pos max vel+acc =  {max_velocity}, {max_accel}")
         return float(max_velocity), float(max_accel)
 
-
     # PositionerHardwareStatusGet :  Read positioner hardware status
     def PositionerHardwareStatusGet(self, socketId, PositionerName):
         command = 'PositionerHardwareStatusGet(' + PositionerName + ',int *)'
@@ -261,10 +285,3 @@ class XpsPositioner:
         return retList
 
 
-
-class XpsMotionGroup():
-    positioners = None
-
-    def __init__(self, name, category):
-        self.name = name
-        self.category = category

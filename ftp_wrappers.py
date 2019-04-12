@@ -46,8 +46,36 @@ class FTPBaseWrapper(object):
         self.connect()
         self.cwd(os.path.join(ftphome, 'Config'))
         lines = self.getlines('system.ini')
+        lines = [line.strip() for line in lines]
         self.close()
-        return lines
+        parsed = self.parse_ftp_string(lines)
+        return parsed
+
+    @staticmethod
+    def parse_ftp_string(string_in):
+        """ returns a dict of dicts for all non-emtpy sections """
+
+        sections = {}
+        new_key = ""
+        current_section = {}
+
+        for line in string_in:
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            elif line.startswith("["):
+                if new_key and current_section:
+                    sections[new_key] = current_section
+                new_key = line.replace("[", "").replace("]", "")
+                current_section = {}
+            else:
+                field, val = line.split(" =")
+                if val:
+                    if field == "StageName":
+                        val = val.split("@")[-2]
+                    current_section[field] = val.strip()
+        sections[new_key] = current_section
+
+        return sections
 
     def close(self):
         if self._conn is not None:
@@ -85,9 +113,12 @@ class SFTPWrapper(FTPBaseWrapper):
         if not HAS_PYSFTP:
             raise ValueError("pysftp not installed.")
 
+        cnopts = pysftp.CnOpts()
+        cnopts.hostkeys = None
         self._conn = pysftp.Connection(self.host,
                                        username=self.username,
-                                       password=self.username)
+                                       password=self.username,
+                                       cnopts=cnopts)
 
     def save(self, remotefile, localfile):
         "save remote file to local file"
@@ -140,3 +171,4 @@ class FTPWrapper(FTPBaseWrapper):
         txtfile = bytesio(six.b(text))
         # print(" Put ", text, txtfile)
         self._conn.storbinary('STOR %s' % remotefile, txtfile)
+
