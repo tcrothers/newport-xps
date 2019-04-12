@@ -76,54 +76,15 @@ class NewportXps:
         out = self._create_status_header(sock)
 
         out.append("# Groups and Stages")
-        hstat = self._get_hardware_status()
-        return out
+        for group in self.groups.values():
+            out.append(group.get_full_status(sock))
 
-        # perrs = self.get_positioner_errors()
-        #
-        # for groupname, status in self.get_group_status().items():
-        #     this = self.groups[groupname]
-        #     out.append("%s (%s), Status: %s" %
-        #                (groupname, this['category'], status))
-        #     for pos in this['positioners']:
-        #         stagename = '%s.%s' % (groupname, pos)
-        #         stage = self.stages[stagename]
-        #         out.append("   %s (%s)"  % (stagename, stage['stagetype']))
-        #         out.append("      Hardware Status: %s"  % (hstat[stagename]))
-        #         out.append("      Positioner Errors: %s"  % (perrs[stagename]))
-        # return "\n".join(out)
+
+
+        return "\n".join(out)
 
 #########################################################
 
-    def _get_hardware_status(self, sock):
-        """
-        get dictionary of hardware status for each stage
-        """
-        out = OrderedDict()
-        for stage in self.stages.items():
-            stat = stage.hardware_status_get(sock)
-            print(f"hardware status = {stat}")
-            stat = stage.hardware_status_string_get(sock, stat)
-            print(f"hardware status string = {stat}")
-        return out
-
-    def get_positioner_errors(self):
-        """
-        get dictionary of positioner errors for each stage
-        """
-        out = OrderedDict()
-        for stage in self.stages:
-            if stage in ('', None): continue
-            err, stat = self._xps.PositionerErrorGet(self._sid, stage)
-            self.check_error(err, msg="Pos Error '%s'" % (stage))
-
-            err, val = self._xps.PositionerErrorStringGet(self._sid, stat)
-            self.check_error(err, msg="Pos ErrorString '%s'" % (stat))
-
-            if len(val) < 1:
-                val = 'OK'
-            out[stage] = val
-        return out
 
 #########################################################
 
@@ -209,13 +170,38 @@ class NewportXpsQ(NewportXps):
 
 # callable by xps
 class XpsMotionGroup():
-    positioners = None
+    positioner = None
+    type = "SingleAxes"
 
     def __init__(self, name):
         self.name = name
 
     def add_positioner(self, name, stage_type, plug_number, sock):
-        self.positioners = XpsPositioner(name, stage_type, plug_number, sock)
+        self.positioner = XpsPositioner(name, stage_type, plug_number, sock)
+
+    def get_full_status(self, sock):
+        out = []
+
+        group_status = self.get_status(sock)
+        hardware_status = self.get_positioner_status(sock)
+        positioner_errors = self.get_positioner_errors(sock)
+
+        out.append(f"{self.name} ({self.type}), Status: {group_status}")
+        out.append(f"   {self.positioner.name} {self.positioner.stage_type}")
+        out.append(f"      Hardware Status: {hardware_status}")
+        out.append(f"      Positioner Errors: {positioner_errors}")
+        return "\n".join(out)
+
+    def get_positioner_status(self, sock):
+        return self.positioner.hardware_status_get(sock)
+
+    # GroupStatusGet :  Return group status
+    def get_status(self, sock):
+        return int(sock.send_recv(f"GroupStatusGet({self.name},int *)"))
+        # todo: test this return type
+
+    def get_positioner_errors(self, sock):
+        return self.positioner.get_positioner_errors(sock)
 
 # hardware level: called by group
 class XpsPositioner:
@@ -233,15 +219,19 @@ class XpsPositioner:
         self._find_max_vel_and_accel(sock)
         self._find_travel_lims(sock)
 
-    # PositionerHardwareStatusGet :  Read positioner hardware status
     def hardware_status_get(self, sock):
-        returnedString = sock.send_recv(f"PositionerHardwareStatusGet({self.name},int *)")
-        return returnedString
+        # PositionerHardwareStatusGet :  Read positioner hardware status
+        hardware_status_code = sock.send_recv(f"PositionerHardwareStatusGet({self.name},int *)")
+        # PositionerHardwareStatusStringGet :  Return the positioner hardware status string corresponding to the positioner error code
+        return sock.send_recv(f"PositionerHardwareStatusStringGet({hardware_status_code}, char *)")
 
-    # PositionerHardwareStatusStringGet :  Return the positioner hardware status string corresponding to the positioner error code
-    def hardware_status_string_get(self, sock, hardware_status):
-        return sock.send_recv(f"PositionerHardwareStatusStringGet({hardware_status}, char *)")
+    def get_positioner_errors(self, sock):
+        # PositionerErrorGet :  Read and clear positioner error code
+        hardware_status_code =  sock.send_recv(f"PositionerErrorGet({self.name},int *)")
+        # PositionerErrorStringGet :  Return the positioner status string corresponding to the positioner error code
+        return sock.send_recv(f"PositionerErrorStringGet({hardware_status_code}, char *)")
 
+##################
 
     def _find_travel_lims(self, sock):
         try:
@@ -270,18 +260,4 @@ class XpsPositioner:
         print(f"positioner:{self.name}")
         print(f"pos max vel+acc =  {max_velocity}, {max_accel}")
         return float(max_velocity), float(max_accel)
-
-    # PositionerHardwareStatusGet :  Read positioner hardware status
-    def PositionerHardwareStatusGet(self, socketId, PositionerName):
-        command = 'PositionerHardwareStatusGet(' + PositionerName + ',int *)'
-        error, returnedString = self.Send(socketId, command)
-        if (error != 0):
-            return [error, returnedString]
-
-        i, j, retList = 0, 0, [error]
-        while ((i + j) < len(returnedString) and returnedString[i + j] != ','):
-            j += 1
-        retList.append(eval(returnedString[i:i + j]))
-        return retList
-
 
