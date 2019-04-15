@@ -3,6 +3,7 @@ from . import ftp_wrappers
 from collections import OrderedDict
 import time
 from socket import getfqdn
+from . import motion_group
 
 
 # todo exceptions are not handled
@@ -83,8 +84,6 @@ class NewportXps:
 
         return "\n".join(out)
 
-#########################################################
-
 
 #########################################################
 
@@ -126,7 +125,7 @@ class NewportXps:
 
         # set up groups and positioners
         for group_name in single_ax_groups:
-            self.groups[group_name] = XpsMotionGroup(group_name)
+            self.groups[group_name] = motion_group.XpsMotionGroup(group_name)
 
             positioner_name = config_dict[group_name]["PositionerInUse"]
             pos_hardware_name = f"{group_name}.{positioner_name}"
@@ -139,13 +138,20 @@ class NewportXps:
 
         return
 
-    def _login(self, socket, username, password):
-        return socket.send_recv(f"Login({username},{password})")
-
     # returns string of firmware version
     @staticmethod
     def firmware_version_get(socket):
         return socket.send_recv(f"FirmwareVersionGet(char *)")
+
+#########################################################
+    # ObjectsListGet :  Group name and positioner name
+    def ObjectsListGet(self, sock):
+        return sock.send_recv('ObjectsListGet(char *)')
+
+    def _login(self, socket, username, password):
+        return socket.send_recv(f"Login({username},{password})")
+
+
 
 class NewportXpsC(NewportXps):
     model = "C"
@@ -167,97 +173,4 @@ class NewportXpsQ(NewportXps):
     def _setup_ftp_client(self):
         self.ftp = ftp_wrappers.FTPWrapper(**self._ftp_args())
         self.ftphome = ''
-
-# callable by xps
-class XpsMotionGroup():
-    positioner = None
-    type = "SingleAxes"
-
-    def __init__(self, name):
-        self.name = name
-
-    def add_positioner(self, name, stage_type, plug_number, sock):
-        self.positioner = XpsPositioner(name, stage_type, plug_number, sock)
-
-    def get_full_status(self, sock):
-        out = []
-
-        group_status = self.get_status(sock)
-        hardware_status = self.get_positioner_status(sock)
-        positioner_errors = self.get_positioner_errors(sock)
-
-        out.append(f"{self.name} ({self.type}), Status: {group_status}")
-        out.append(f"   {self.positioner.name} {self.positioner.stage_type}")
-        out.append(f"      Hardware Status: {hardware_status}")
-        out.append(f"      Positioner Errors: {positioner_errors}")
-        return "\n".join(out)
-
-    def get_positioner_status(self, sock):
-        return self.positioner.hardware_status_get(sock)
-
-    # GroupStatusGet :  Return group status
-    def get_status(self, sock):
-        return int(sock.send_recv(f"GroupStatusGet({self.name},int *)"))
-        # todo: test this return type
-
-    def get_positioner_errors(self, sock):
-        return self.positioner.get_positioner_errors(sock)
-
-# hardware level: called by group
-class XpsPositioner:
-    max_accel = None
-    max_velocity = None
-
-    min_position = None
-    max_position = None
-
-    def __init__(self, name, stage_type, plug_number, sock):
-        self.name = name
-        self.stage_type = stage_type
-        self.plug_number = plug_number
-
-        self._find_max_vel_and_accel(sock)
-        self._find_travel_lims(sock)
-
-    def hardware_status_get(self, sock):
-        # PositionerHardwareStatusGet :  Read positioner hardware status
-        hardware_status_code = sock.send_recv(f"PositionerHardwareStatusGet({self.name},int *)")
-        # PositionerHardwareStatusStringGet :  Return the positioner hardware status string corresponding to the positioner error code
-        return sock.send_recv(f"PositionerHardwareStatusStringGet({hardware_status_code}, char *)")
-
-    def get_positioner_errors(self, sock):
-        # PositionerErrorGet :  Read and clear positioner error code
-        hardware_status_code =  sock.send_recv(f"PositionerErrorGet({self.name},int *)")
-        # PositionerErrorStringGet :  Return the positioner status string corresponding to the positioner error code
-        return sock.send_recv(f"PositionerErrorStringGet({hardware_status_code}, char *)")
-
-##################
-
-    def _find_travel_lims(self, sock):
-        try:
-            (self.min_position, self.max_position) = self._get_travel_lims(sock)
-        except:
-            print(f"could not set travel lims for {self.name}")
-
-    # PositionerTravelLimitsGet :  Return maximum and minimum possible displacements of the positioner
-    def _get_travel_lims(self, sock):
-        lo_lim, hi_lim = sock.send_recv(
-            f"PositionerUserTravelLimitsGet({self.name},double *,double *)")
-        print(f"pos travel lims = {lo_lim}, {hi_lim}")
-        return float(lo_lim), float(hi_lim)
-
-    def _find_max_vel_and_accel(self, sock):
-        try:
-            self.max_velocity, self.max_accel = self._get_positioner_max_vel_and_accel(sock)
-        except:
-            print("could not set max velo/accel for {self.name}")
-
-    # PositionerMaximumVelocityAndAccelerationGet :  Return maximum velocity and acceleration of the positioner
-    def _get_positioner_max_vel_and_accel(self, sock):
-        max_velocity, max_accel = sock.send_recv(
-            f"PositionerMaximumVelocityAndAccelerationGet({self.name},double *,double *)")
-
-        print(f"positioner:{self.name}")
-        print(f"pos max vel+acc =  {max_velocity}, {max_accel}")
-        return float(max_velocity), float(max_accel)
 
