@@ -1,7 +1,6 @@
 from abc import ABC
 import socket
 
-
 class MyException(Exception):
     """XPS Controller Exception"""
 
@@ -26,7 +25,7 @@ class AbstractSocket(ABC):
         self._socket.__next__()
         pass
 
-    def socket_coroutine(self, a_socket):
+    def socket_coroutine(self, a_socket, port_number, timeout, blocking):
         pass
 
     # handles error, returns either a single string or tuple of strings
@@ -40,15 +39,13 @@ class AbstractSocket(ABC):
         return msg
 
 
+
 class XpsSocket(AbstractSocket):
 
-    buffer_size = 1024
+    buffer_size = 2048
 
     def __init__(self, host, port=5001, timeout=20.0, blocking=True):
         super(XpsSocket, self).__init__(host, port, timeout, blocking)
-
-    def create_socket(self, host, port=5001, timeout=20.0, blocking=True):
-        pass
 
     def socket_coroutine(self, ip_addr, port_number, timeout, blocking):
         try:
